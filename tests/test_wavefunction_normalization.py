@@ -122,14 +122,16 @@ def test_wavefunction_normalization(m):
     # 2. Solve the one-electron problem
     # ---------------------------------------------------------
 
-    orbitals = solve_orbitals(
+    orbitals_sets = solve_orbitals(
         rho_nodes=rho_nodes,
         z_nodes=z_nodes,
         Z=1,
         B=0.0,
-        m=m,
-        n_orbitals=1,
+        m=np.array([m]),
+        n_orbitals=np.array([1]),
     )
+
+    orbitals = orbitals_sets[0]
 
     # ---------------------------------------------------------
     # 3. Independently integrate the orbital norm

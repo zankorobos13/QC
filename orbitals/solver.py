@@ -1,3 +1,4 @@
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -13,36 +14,6 @@ from operators.fem import assemble_fem_matrices
 class OrbitalSet:
     """
     Set of spatial orbitals for one magnetic quantum number m.
-
-    Attributes
-    ----------
-    m : int
-        Magnetic quantum number.
-
-    energies : ndarray, shape (n_orbitals,)
-        One-electron orbital energies.
-
-    coefficients : ndarray, shape (n_fem, n_orbitals)
-        Orbital coefficients in the reduced FEM basis.
-
-    overlap : csc_matrix
-        FEM overlap matrix S_{mu,nu}.
-
-    hamiltonian : csc_matrix
-        One-electron Hamiltonian matrix h_{mu,nu} = T + V
-        in the FEM basis.
-
-    kinetic : csc_matrix
-        Kinetic energy matrix T.
-
-    potential : csc_matrix
-        Potential energy matrix V.
-
-    free_indices : ndarray
-        Indices of retained nodes in the original FEM grid.
-
-    residual_norms : ndarray
-        Norms of generalized eigenvalue residuals.
     """
 
     m: int
@@ -67,10 +38,6 @@ class OrbitalSet:
         return self.coefficients.shape[0]
 
     def check_orthonormality(self, tolerance=1e-9):
-        """
-        Check C^dagger S C = I.
-        """
-
         metric = self.coefficients.conj().T @ (
             self.overlap @ self.coefficients
         )
@@ -82,10 +49,6 @@ class OrbitalSet:
         return error < tolerance
 
     def orthonormality_error(self):
-        """
-        Return ||C^dagger S C - I||.
-        """
-
         metric = self.coefficients.conj().T @ (
             self.overlap @ self.coefficients
         )
@@ -95,12 +58,6 @@ class OrbitalSet:
         return np.linalg.norm(metric - identity)
 
     def eigenvalue_residuals(self):
-        """
-        Return residual vectors:
-
-            r_p = h C_p - epsilon_p S C_p
-        """
-
         HC = self.hamiltonian @ self.coefficients
         SC = self.overlap @ self.coefficients
 
@@ -119,65 +76,52 @@ def solve_orbitals(
     tol=1e-10,
     maxiter=None,
     ncv=None,
-): 
+):
     """
-    Solve the one-electron generalized eigenvalue problem
-    in a fixed magnetic quantum number sector.
-
-        h C = S C epsilon
-
-    The FEM matrices are assembled using operators.fem.
+    Solve one-electron generalized eigenvalue problems
+    for multiple magnetic quantum number sectors.
 
     Parameters
     ----------
-    rho_nodes : array
-        Physical radial mesh nodes.
+    m : np.ndarray
+        Magnetic quantum numbers.
 
-    z_nodes : array
-        Physical z mesh nodes.
+    n_orbitals : np.ndarray
+        Number of orbitals to calculate in each m sector.
 
-    Z : float
-        Nuclear charge.
-
-    B : float
-        Magnetic field in atomic units.
-
-    m : int
-        Magnetic quantum number.
-
-    n_orbitals : int
-        Number of lowest-energy orbitals to calculate.
-
-    quadrature_order : int
-        Gauss-Legendre quadrature order.
-
-    sigma : float or None
-        Optional shift for shift-invert eigensolver.
-        If None, the lowest algebraic eigenvalues are calculated.
-
-    tol : float
-        Eigenvalue solver tolerance.
-
-    maxiter : int or None
-        Maximum number of eigensolver iterations.
-
-    ncv : int or None
-        Number of Lanczos vectors used by ARPACK.
+    Other parameters are unchanged.
 
     Returns
     -------
-    OrbitalSet
-        Calculated spatial orbitals and FEM matrices.
+    list[OrbitalSet]
+        One OrbitalSet for each magnetic quantum number.
     """
 
-    if not isinstance(m, (int, np.integer)):
-        raise TypeError("m must be an integer.")
+    m = np.asarray(m)
+    n_orbitals = np.asarray(n_orbitals)
 
-    if not isinstance(n_orbitals, (int, np.integer)):
-        raise TypeError("n_orbitals must be an integer.")
+    if m.ndim != 1:
+        raise ValueError("m must be a one-dimensional array.")
 
-    if n_orbitals <= 0:
-        raise ValueError("n_orbitals must be positive.")
+    if n_orbitals.ndim != 1:
+        raise ValueError("n_orbitals must be a one-dimensional array.")
+
+    if len(m) != len(n_orbitals):
+        raise ValueError(
+            "m and n_orbitals must have the same length."
+        )
+
+    if len(m) == 0:
+        raise ValueError("At least one m sector must be provided.")
+
+    if not np.issubdtype(m.dtype, np.integer):
+        raise TypeError("All elements of m must be integers.")
+
+    if not np.issubdtype(n_orbitals.dtype, np.integer):
+        raise TypeError("All elements of n_orbitals must be integers.")
+
+    if np.any(n_orbitals <= 0):
+        raise ValueError("All values of n_orbitals must be positive.")
 
     if Z <= 0:
         raise ValueError("Nuclear charge must be positive.")
@@ -185,115 +129,112 @@ def solve_orbitals(
     if quadrature_order <= 0:
         raise ValueError("quadrature_order must be positive.")
 
-    # --------------------------------------------------
-    # 1. Assemble FEM matrices
-    # --------------------------------------------------
+    if len(np.unique(m)) != len(m):
+        raise ValueError("Each magnetic quantum number must be unique.")
 
-    T, S, V, free_indices = assemble_fem_matrices(
-        rho_nodes=rho_nodes,
-        z_nodes=z_nodes,
-        Z=Z,
-        B=B,
-        m=m,
-        spin=0.0,
-        quadrature_order=quadrature_order,
-    )
+    orbital_sets = []
 
-    # --------------------------------------------------
-    # 2. Construct one-electron Hamiltonian
-    # --------------------------------------------------
+    for m_sector, n_sector in zip(m, n_orbitals):
 
-    h = (T + V).tocsc()
+        m_sector = int(m_sector)
+        n_sector = int(n_sector)
 
-    n_fem = h.shape[0]
+        # 1. Assemble FEM matrices
 
-    if n_orbitals > n_fem:
-        raise ValueError(
-            f"Requested {n_orbitals} orbitals, "
-            f"but the FEM basis contains only {n_fem} functions."
+        T, S, V, free_indices = assemble_fem_matrices(
+            rho_nodes=rho_nodes,
+            z_nodes=z_nodes,
+            Z=Z,
+            B=B,
+            m=m_sector,
+            spin=0.0,
+            quadrature_order=quadrature_order,
         )
 
-    # --------------------------------------------------
-    # 3. Solve generalized eigenvalue problem
-    #
-    #       h C = S C epsilon
-    #
-    # Use shift-invert for sparse matrices.
-    # --------------------------------------------------
+        # 2. Construct one-electron Hamiltonian
 
-    if n_orbitals >= n_fem - 1:
+        h = (T + V).tocsc()
 
-        energies, coefficients = eigh(
-            h.toarray(),
-            S.toarray(),
-            subset_by_index=(0, n_orbitals - 1),
-            driver="gvx",
-        )
+        n_fem = h.shape[0]
 
-    else:
-
-        # Estimate a shift below the lowest hydrogen-like
-        # orbital energy. The user can override it.
-        if sigma is None:
-            sigma = -0.6 * Z**2 - 0.5 * B * m
-
-        # Lanczos subspace dimension.
-        if ncv is None:
-            ncv = min(
-                n_fem,
-                max(4 * n_orbitals + 1, 40),
+        if n_sector > n_fem:
+            raise ValueError(
+                f"Requested {n_sector} orbitals for m={m_sector}, "
+                f"but the FEM basis contains only {n_fem} functions."
             )
 
-        # Maximum number of iterations.
-        if maxiter is None:
-            maxiter = max(2000, 20 * n_fem)
+        # 3. Solve generalized eigenvalue problem
 
-        energies, coefficients = eigsh(
-            h,
-            k=n_orbitals,
-            M=S,
-            sigma=sigma,
-            which="LM",
-            tol=tol,
-            maxiter=maxiter,
-            ncv=ncv,
+        if n_sector >= n_fem - 1:
+
+            energies, coefficients = eigh(
+                h.toarray(),
+                S.toarray(),
+                subset_by_index=(0, n_sector - 1),
+                driver="gvx",
+            )
+
+        else:
+
+            sigma_sector = sigma
+
+            if sigma_sector is None:
+                sigma_sector = -0.6 * Z**2 - 0.5 * B * m_sector
+
+            ncv_sector = ncv
+
+            if ncv_sector is None:
+                ncv_sector = min(
+                    n_fem,
+                    max(4 * n_sector + 1, 40),
+                )
+
+            maxiter_sector = maxiter
+
+            if maxiter_sector is None:
+                maxiter_sector = max(2000, 20 * n_fem)
+
+            energies, coefficients = eigsh(
+                h,
+                k=n_sector,
+                M=S,
+                sigma=sigma_sector,
+                which="LM",
+                tol=tol,
+                maxiter=maxiter_sector,
+                ncv=ncv_sector,
+            )
+
+        # 4. Sort eigenvalues and eigenvectors
+
+        order = np.argsort(energies)
+
+        energies = np.asarray(energies[order])
+        coefficients = np.asarray(coefficients[:, order])
+
+        # 5. Calculate generalized eigenvalue residuals
+
+        HC = h @ coefficients
+        SC = S @ coefficients
+
+        residuals = HC - SC * energies[np.newaxis, :]
+
+        residual_norms = np.linalg.norm(residuals, axis=0)
+
+        # 6. Construct orbital set
+
+        orbital_set = OrbitalSet(
+            m=m_sector,
+            energies=energies,
+            coefficients=coefficients,
+            overlap=S,
+            hamiltonian=h,
+            kinetic=T,
+            potential=V,
+            free_indices=free_indices,
+            residual_norms=residual_norms,
         )
 
+        orbital_sets.append(orbital_set)
 
-    # --------------------------------------------------
-    # 4. Sort eigenvalues and eigenvectors
-    # --------------------------------------------------
-
-    order = np.argsort(energies)
-
-    energies = np.asarray(energies[order])
-    coefficients = np.asarray(coefficients[:, order])
-
-    # --------------------------------------------------
-    # 5. Calculate generalized eigenvalue residuals
-    # --------------------------------------------------
-
-    HC = h @ coefficients
-    SC = S @ coefficients
-
-    residuals = HC - SC * energies[np.newaxis, :]
-
-    residual_norms = np.linalg.norm(residuals, axis=0)
-
-    # --------------------------------------------------
-    # 6. Construct orbital set
-    # --------------------------------------------------
-
-    orbitals = OrbitalSet(
-        m=int(m),
-        energies=energies,
-        coefficients=coefficients,
-        overlap=S,
-        hamiltonian=h,
-        kinetic=T,
-        potential=V,
-        free_indices=free_indices,
-        residual_norms=residual_norms,
-    )
-
-    return orbitals
+    return orbital_sets

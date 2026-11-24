@@ -1,5 +1,7 @@
 from grid.mesh import make_atomic_mesh
 from orbitals.solver import solve_orbitals
+from orbitals.basis import build_orbital_basis
+import numpy as np
 
 rho, z = make_atomic_mesh(
     n_rho=80,
@@ -11,23 +13,17 @@ rho, z = make_atomic_mesh(
     t_z_max=0.98,
 )
 
-orbitals = solve_orbitals(
+orbital_sets = solve_orbitals(
     rho_nodes=rho.physical,
     z_nodes=z.physical,
     Z=1,
     B=0,
-    m=0,
-    n_orbitals=6
+    m=np.array([-2, -1, 0, 1, 2]),
+    n_orbitals=np.array([4, 6, 8, 6, 4])
 )
 
-print("Orbital energies:")
+basis = build_orbital_basis(orbital_sets)
 
-print(orbitals.energies)
+print("Ham:")
 
-C = orbitals.coefficients
-H = orbitals.hamiltonian
-
-h = C.conj().T @ H @ C
-
-print("Orbital Hamiltonian:")
-print(h)
+print(basis.hamiltonian)
