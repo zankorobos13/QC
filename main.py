@@ -11,6 +11,8 @@ from integrals.tensor import build_coulomb_tensor
 from scf.system import ElectronicSystem
 from scf.uhf import run_uhf
 
+import time
+
 
 def main():
 
@@ -35,8 +37,8 @@ def main():
     # 2. FEM grid
     # ---------------------------------------------------------
 
-    n_rho = 80
-    n_z = 80
+    n_rho = 160
+    n_z = 160
 
     rho_mesh, z_mesh = make_atomic_mesh(
         n_rho=n_rho,
@@ -55,8 +57,8 @@ def main():
     # 3. Spatial orbital calculation
     # ---------------------------------------------------------
 
-    m_values = np.array([0, -1, 1], dtype=int)
-    orbital_counts = np.array([6, 2, 2], dtype=int)
+    m_values = np.array([0], dtype=int)
+    orbital_counts = np.array([16], dtype=int)
 
     print("=" * 65)
     print("Be+ UHF-SCF CALCULATION")
@@ -97,6 +99,8 @@ def main():
         z_nodes,
     )
 
+    t = time.time()
+
     g = build_coulomb_tensor(
         basis=basis,
         psi_arr=psi_arr,
@@ -104,6 +108,8 @@ def main():
         z_nodes=z_nodes,
         quadrature_order=8,
     )
+
+    print("Time elapsed: ", time.time() - t)
 
     print("Coulomb tensor shape:", g.shape)
 
@@ -205,7 +211,7 @@ def main():
 
     exact_energy = -14.27747
 
-    print(f"Exact non-interacting-free He energy: {exact_energy:.12f} Ha")
+    print(f"Exact non-interacting-free Be+ energy: {exact_energy:.12f} Ha")
     print(f"Calculated energy:                    {result.energy:.12f} Ha")
     print(f"Difference:                           {result.energy - exact_energy:.12f} Ha")
 

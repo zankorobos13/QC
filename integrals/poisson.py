@@ -675,6 +675,201 @@ def assemble_poisson_rhs_from_orbitals(
     return b_full[free_indices]
 
 
+
+def solve_poisson_orbital_pair(
+    orbital_q,
+    orbital_s,
+    rho_nodes,
+    z_nodes,
+    k,
+    quadrature_order=8,
+):
+    """
+    Solve the Poisson equation for one orbital-pair transition density.
+
+    The returned potential can be reused for all integrals having
+    the same radial transition density and angular channel.
+
+    Source density:
+        rho_qs = conj(psi_q) * psi_s
+
+    Returns
+    -------
+    potential : ndarray
+        Potential on the FEM grid.
+    """
+
+    orbital_q = np.asarray(orbital_q)
+    orbital_s = np.asarray(orbital_s)
+
+    rho_nodes = np.asarray(rho_nodes, dtype=float)
+    z_nodes = np.asarray(z_nodes, dtype=float)
+
+    if not isinstance(k, (int, np.integer)):
+        raise TypeError("k must be an integer.")
+
+    if not isinstance(quadrature_order, (int, np.integer)):
+        raise TypeError("quadrature_order must be an integer.")
+
+    if quadrature_order < 1:
+        raise ValueError("quadrature_order must be positive.")
+
+    expected = (len(rho_nodes), len(z_nodes))
+
+    if orbital_q.shape != expected or orbital_s.shape != expected:
+        raise ValueError(f"Orbital grids must have shape {expected}.")
+
+    if not np.all(np.isfinite(orbital_q)):
+        raise ValueError("orbital_q contains non-finite values.")
+
+    if not np.all(np.isfinite(orbital_s)):
+        raise ValueError("orbital_s contains non-finite values.")
+
+    lu, K, free_indices, K_full = _get_poisson_factorization(
+        rho_nodes,
+        z_nodes,
+        int(k),
+        quadrature_order,
+    )
+
+    rhs = assemble_poisson_rhs_from_orbitals(
+        orbital_q,
+        orbital_s,
+        rho_nodes,
+        z_nodes,
+        free_indices,
+        quadrature_order,
+    )
+
+    # Boundary nodes are excluded from the unknown vector.
+    boundary_mask = np.ones(expected, dtype=bool)
+
+    boundary_mask[-1, :] = False
+    boundary_mask[:, 0] = False
+    boundary_mask[:, -1] = False
+
+    if k != 0 and np.isclose(rho_nodes[0], 0.0):
+        boundary_mask[0, :] = False
+
+    boundary_indices = np.flatnonzero(
+        ~boundary_mask.ravel()
+    )
+
+    boundary_values = np.zeros(
+        expected,
+        dtype=np.result_type(
+            orbital_q.dtype,
+            orbital_s.dtype,
+            np.float64,
+        ),
+    )
+
+    # Monopole boundary condition for k = 0.
+    if k == 0:
+        charge = _transition_charge(
+            orbital_q,
+            orbital_s,
+            rho_nodes,
+            z_nodes,
+            quadrature_order,
+        )
+
+        boundary_values = _monopole_boundary_values(
+            rho_nodes,
+            z_nodes,
+            charge,
+        )
+
+    boundary_vector = boundary_values.ravel()[boundary_indices]
+
+    rhs = rhs - (
+        K_full[free_indices, :][:, boundary_indices]
+        @ boundary_vector
+    )
+
+    coefficients = _solve_factorized(lu, rhs)
+
+    potential = boundary_values.copy()
+    potential.ravel()[free_indices] = coefficients
+
+    return potential
+
+
+def integrate_orbital_pair_potential(
+    orbital_p,
+    orbital_r,
+    potential,
+    rho_nodes,
+    z_nodes,
+    quadrature_order=8,
+):
+    """
+    Integrate a transition density against a precomputed potential.
+
+    Integral:
+        integral conj(psi_p) * psi_r * V * rho d(rho) dz
+
+    The interpolation and quadrature are identical to those used
+    in integrate_poisson_orbitals().
+    """
+
+    orbital_p = np.asarray(orbital_p)
+    orbital_r = np.asarray(orbital_r)
+    potential = np.asarray(potential)
+
+    rho_nodes = np.asarray(rho_nodes, dtype=float)
+    z_nodes = np.asarray(z_nodes, dtype=float)
+
+    expected = (len(rho_nodes), len(z_nodes))
+
+    if orbital_p.shape != expected:
+        raise ValueError(f"orbital_p must have shape {expected}.")
+
+    if orbital_r.shape != expected:
+        raise ValueError(f"orbital_r must have shape {expected}.")
+
+    if potential.shape != expected:
+        raise ValueError(f"potential must have shape {expected}.")
+
+    mesh_data = _mesh_quadrature_data(
+        rho_nodes,
+        z_nodes,
+        quadrature_order,
+    )
+
+    nodes = mesh_data["nodes"]
+
+    p_local = orbital_p.ravel()[nodes]
+    r_local = orbital_r.ravel()[nodes]
+    u_local = potential.ravel()[nodes]
+
+    result = 0.0 + 0.0j
+
+    for N, weights in mesh_data["quadrature"]:
+
+        p_value = p_local @ N
+        r_value = r_local @ N
+        u_value = u_local @ N
+
+        density = np.conj(p_value) * r_value
+
+        result += np.sum(
+            weights
+            * density
+            * u_value
+        )
+
+    if not (
+        np.iscomplexobj(orbital_p)
+        or np.iscomplexobj(orbital_r)
+        or np.iscomplexobj(potential)
+    ):
+        return float(np.real(result))
+
+    return result
+
+
+
 # =============================================================
 # Main two-electron integral
 # =============================================================

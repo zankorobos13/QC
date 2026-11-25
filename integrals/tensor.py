@@ -1,7 +1,10 @@
 
 import numpy as np
 
-from integrals.poisson import integrate_poisson_orbitals
+from integrals.poisson import (
+    solve_poisson_orbital_pair,
+    integrate_orbital_pair_potential,
+)
 
 
 def build_coulomb_tensor(
@@ -15,50 +18,22 @@ def build_coulomb_tensor(
     """
     Build the full two-electron Coulomb integral tensor.
 
-    Integral convention:
+    Convention:
 
         g[p,q,r,s] = <pq|1/r12|rs>
-
-        = integral phi_p*(1) phi_q*(2)
-          1/r12
-          phi_r(1) phi_s(2) d1 d2
 
     The magnetic selection rule is:
 
         m[p] - m[r] + m[q] - m[s] = 0
 
-    The implementation exploits the permutation symmetries
-    valid for real radial orbital functions.
-
-    Parameters
-    ----------
-    basis : OrbitalBasis
-        Combined orbital basis. Must provide m_values and n_orbitals.
-
-    psi_arr : ndarray
-        Radial orbital values on the FEM grid.
-        Shape: (n_orbitals, n_rho, n_z).
-
-    rho_nodes, z_nodes : ndarray
-        Physical FEM grid coordinates.
-
-    quadrature_order : int
-        FEM quadrature order used by the Poisson integrator.
-
-    symmetry_tolerance : float
-        Tolerance for checking that radial orbitals are real.
-
-    Returns
-    -------
-    g : ndarray
-        Full four-index Coulomb tensor.
-        Shape: (n_orbitals, n_orbitals, n_orbitals, n_orbitals).
+    Poisson potentials are calculated once per unique unordered
+    orbital pair and reused for all compatible integrals.
     """
 
     m_values = np.asarray(basis.m_values)
     psi_arr = np.asarray(psi_arr)
-    rho_nodes = np.asarray(rho_nodes)
-    z_nodes = np.asarray(z_nodes)
+    rho_nodes = np.asarray(rho_nodes, dtype=float)
+    z_nodes = np.asarray(z_nodes, dtype=float)
 
     n_orbitals = basis.n_orbitals
 
@@ -76,11 +51,6 @@ def build_coulomb_tensor(
 
     m_values = m_values.astype(int)
 
-    if psi_arr.ndim != 3:
-        raise ValueError(
-            "psi_arr must have shape (n_orbitals, n_rho, n_z)."
-        )
-
     expected_shape = (
         n_orbitals,
         len(rho_nodes),
@@ -96,23 +66,66 @@ def build_coulomb_tensor(
     if not np.all(np.isfinite(psi_arr)):
         raise ValueError("psi_arr contains non-finite values.")
 
+    if not isinstance(quadrature_order, (int, np.integer)):
+        raise TypeError("quadrature_order must be an integer.")
+
     if quadrature_order <= 0:
         raise ValueError("quadrature_order must be positive.")
 
-    # The current FEM orbital solver produces real radial functions.
+    if not np.isfinite(symmetry_tolerance) or symmetry_tolerance < 0:
+        raise ValueError("symmetry_tolerance must be non-negative.")
+
     max_imaginary = np.max(np.abs(np.imag(psi_arr)))
 
     if max_imaginary > symmetry_tolerance:
         raise ValueError(
             "The radial orbitals are complex. "
-            "The real-orbital permutation symmetries "
-            "used by this implementation are not applicable."
+            "Real-orbital permutation symmetries cannot be used."
         )
 
     psi_arr = np.asarray(np.real(psi_arr), dtype=np.float64)
 
     # ---------------------------------------------------------
-    # Allocate tensor
+    # Generate unordered orbital pairs grouped by |delta_m|
+    # ---------------------------------------------------------
+
+    pair_groups = {}
+
+    for p in range(n_orbitals):
+        for r in range(p, n_orbitals):
+
+            k = abs(m_values[p] - m_values[r])
+
+            pair_groups.setdefault(k, []).append((p, r))
+
+    # ---------------------------------------------------------
+    # Precompute one Poisson potential per unique pair.
+    #
+    # For real radial orbitals:
+    #
+    #   psi_p * psi_r = psi_r * psi_p
+    #
+    # The radial Poisson equation depends on k^2, so both
+    # orientations of an unordered pair use the same potential.
+    # ---------------------------------------------------------
+
+    potentials = {}
+
+    for k, pairs in pair_groups.items():
+
+        for q, s in pairs:
+
+            potentials[(q, s)] = solve_poisson_orbital_pair(
+                orbital_q=psi_arr[q],
+                orbital_s=psi_arr[s],
+                rho_nodes=rho_nodes,
+                z_nodes=z_nodes,
+                k=k,
+                quadrature_order=quadrature_order,
+            )
+
+    # ---------------------------------------------------------
+    # Allocate full tensor
     # ---------------------------------------------------------
 
     g = np.zeros(
@@ -121,26 +134,7 @@ def build_coulomb_tensor(
     )
 
     # ---------------------------------------------------------
-    # Generate unordered orbital pairs (p, r).
-    #
-    # Each pair is characterized by:
-    #
-    #     |m[p] - m[r]|
-    #
-    # Only pairs with equal absolute magnetic transfer
-    # can interact.
-    # ---------------------------------------------------------
-
-    pair_groups = {}
-
-    for p in range(n_orbitals):
-        for r in range(p, n_orbitals):
-            k = abs(m_values[p] - m_values[r])
-
-            pair_groups.setdefault(k, []).append((p, r))
-
-    # ---------------------------------------------------------
-    # Calculate unique pair-pair integrals
+    # Calculate integrals using precomputed potentials
     # ---------------------------------------------------------
 
     for k, pairs in pair_groups.items():
@@ -153,25 +147,23 @@ def build_coulomb_tensor(
 
                 delta_qs = m_values[q] - m_values[s]
 
-                # Choose the orientation of the second pair
-                # so that the magnetic selection rule is satisfied.
+                # Orient the second pair to satisfy:
+                # delta_pr + delta_qs = 0.
                 if delta_pr + delta_qs == 0:
                     q0, s0 = q, s
                 else:
                     q0, s0 = s, q
 
-                # -------------------------------------------------
-                # Evaluate one independent integral
-                # -------------------------------------------------
+                # The potential is invariant under pair reversal
+                # for real radial orbitals.
+                potential_qs = potentials[(q, s)]
 
-                value = integrate_poisson_orbitals(
+                value = integrate_orbital_pair_potential(
                     orbital_p=psi_arr[p],
-                    orbital_q=psi_arr[q0],
                     orbital_r=psi_arr[r],
-                    orbital_s=psi_arr[s0],
+                    potential=potential_qs,
                     rho_nodes=rho_nodes,
                     z_nodes=z_nodes,
-                    k=k,
                     quadrature_order=quadrature_order,
                 )
 
@@ -179,7 +171,7 @@ def build_coulomb_tensor(
 
                 if abs(value.imag) > symmetry_tolerance:
                     raise ValueError(
-                        f"Unexpected imaginary part in integral "
+                        f"Unexpected imaginary part in "
                         f"g[{p},{q0},{r},{s0}]: {value.imag}"
                     )
 
@@ -189,12 +181,8 @@ def build_coulomb_tensor(
                 # Apply permutation symmetries
                 # -------------------------------------------------
 
-                base = (p, q0, r, s0)
-
                 if k == 0:
-                    # All eight permutations are valid when
-                    # both transition densities have zero
-                    # magnetic transfer.
+
                     permutations = (
                         (p, q0, r, s0),
                         (r, q0, p, s0),
@@ -205,9 +193,9 @@ def build_coulomb_tensor(
                         (s0, p, q0, r),
                         (s0, r, q0, p),
                     )
+
                 else:
-                    # For nonzero magnetic transfer, only
-                    # four permutations preserve the selection rule.
+
                     permutations = (
                         (p, q0, r, s0),
                         (q0, p, s0, r),
