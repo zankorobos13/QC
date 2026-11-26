@@ -21,10 +21,11 @@ def main():
     # ---------------------------------------------------------
 
     Z = 4.0
-    B = 0.0
+    B = 5000
 
-    n_alpha = 2
-    n_beta = 1
+
+    n_alpha = 1
+    n_beta = 2
 
     system = ElectronicSystem(
         Z=Z,
@@ -208,12 +209,8 @@ def main():
     print("\n" + "=" * 65)
     print("REFERENCE COMPARISON")
     print("=" * 65)
-
-    exact_energy = -14.27747
-
-    print(f"Exact Be+ energy: {exact_energy:.12f} Ha")
+    
     print(f"Calculated energy:                    {result.energy:.12f} Ha")
-    print(f"Difference:                           {result.energy - exact_energy:.12f} Ha")
 
     print("\nCalculation finished.")
 

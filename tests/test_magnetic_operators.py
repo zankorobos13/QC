@@ -6,6 +6,9 @@ from scipy.sparse.linalg import norm as sparse_norm
 from grid.mesh import make_atomic_mesh
 from operators.fem import assemble_fem_matrices
 
+from numpy.polynomial.legendre import leggauss
+from operators.fem import shape_functions
+
 
 # ============================================================
 # TEST CONFIGURATION
@@ -246,3 +249,153 @@ def test_zero_field_independence_from_spin(matrices, m):
 
     assert_sparse_matrices_close(V_up, V_0)
     assert_sparse_matrices_close(V_down, V_0)
+
+
+@pytest.mark.parametrize("m", [1, 2, 3])
+def test_kinetic_matrix_is_even_in_m(matrices, m):
+    """
+    The kinetic operator depends on m through m^2.
+
+    Therefore:
+
+        T(m) = T(-m)
+    """
+
+    T_plus, _, _ = matrices(0.7, m, 0.0)
+    T_minus, _, _ = matrices(0.7, -m, 0.0)
+
+    assert_sparse_matrices_close(T_plus, T_minus)
+
+# ============================================================
+# 6. ABSOLUTE DIAMAGNETIC CONTRIBUTION
+# ============================================================
+
+def assemble_rho_squared_matrix(rho_nodes, z_nodes):
+    """
+    Independently assemble:
+
+        R2_mu_nu = integral rho^3 * N_mu * N_nu drho dz
+
+    This is the FEM matrix corresponding to multiplication
+    by rho^2 in the cylindrical volume element rho drho dz.
+    """
+
+    n_rho = len(rho_nodes)
+    n_z = len(z_nodes)
+
+    n_total = n_rho * n_z
+
+    R2 = np.zeros((n_total, n_total), dtype=np.float64)
+
+    points, weights = leggauss(QUADRATURE_ORDER)
+
+    for i in range(n_rho - 1):
+        for j in range(n_z - 1):
+
+            rho_left = rho_nodes[i]
+            rho_right = rho_nodes[i + 1]
+
+            z_bottom = z_nodes[j]
+            z_top = z_nodes[j + 1]
+
+            J = (
+                (rho_right - rho_left)
+                * (z_top - z_bottom)
+                / 4.0
+            )
+
+            indices = np.array([
+                i * n_z + j,
+                (i + 1) * n_z + j,
+                i * n_z + (j + 1),
+                (i + 1) * n_z + (j + 1),
+            ])
+
+            local = np.zeros((4, 4), dtype=np.float64)
+
+            for a, xi in enumerate(points):
+                for b, eta in enumerate(points):
+
+                    N, _, _ = shape_functions(xi, eta)
+
+                    rho = (
+                        (1.0 - xi) * rho_left
+                        + (1.0 + xi) * rho_right
+                    ) / 2.0
+
+                    weight = (
+                        weights[a]
+                        * weights[b]
+                        * J
+                        * rho**3
+                    )
+
+                    local += (
+                        weight
+                        * np.outer(N, N)
+                    )
+
+            R2[np.ix_(indices, indices)] += local
+
+    return R2
+
+
+def test_absolute_diamagnetic_contribution(mesh, matrices):
+    """
+    Verify the absolute coefficient:
+
+        V(B,m,s) - V(0,m,0)
+        - (-B*m/2 + B*s)*S
+        = B^2/8 * R2
+    """
+
+    rho_nodes, z_nodes = mesh
+
+    B = 0.7
+    m = 1
+    spin = +0.5
+
+    _, S, V_B = matrices(B, m, spin)
+    _, _, V_0 = matrices(0.0, m, 0.0)
+
+    # Obtain the exact FEM free-node indexing.
+    _, _, _, free_indices = assemble_fem_matrices(
+        rho_nodes=rho_nodes,
+        z_nodes=z_nodes,
+        Z=Z,
+        B=B,
+        m=m,
+        spin=spin,
+        quadrature_order=QUADRATURE_ORDER,
+    )
+
+    # Independently assemble the full rho^2 matrix.
+    R2_full = assemble_rho_squared_matrix(
+        rho_nodes,
+        z_nodes,
+    )
+
+    # Apply the same Dirichlet reduction as in the Hamiltonian.
+    R2 = R2_full[np.ix_(free_indices, free_indices)]
+
+    expected = (B**2 / 8.0) * R2
+
+    zeeman_coefficient = -B * m / 2.0 + B * spin
+
+    actual = (
+        V_B
+        - V_0
+        - zeeman_coefficient * S
+    )
+
+    difference = actual.toarray() - expected
+
+    error = np.linalg.norm(difference)
+    reference = np.linalg.norm(expected)
+
+    assert error <= MATRIX_ATOL + MATRIX_RTOL * reference, (
+        "Absolute diamagnetic contribution mismatch: "
+        f"error={error:.6e}, "
+        f"reference={reference:.6e}, "
+        f"relative_error={error / max(reference, 1e-300):.6e}"
+    )
